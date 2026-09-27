@@ -61,7 +61,28 @@ class MainActivity : AppCompatActivity() {
             handler.postDelayed(this, 200)
         }
     }
+private fun loadSubtitle(uri: Uri) {
+    contentResolver.openInputStream(uri)?.use { input ->
+        val bytes = input.readBytes()
+        val text = decodeSubtitleBytes(bytes)
+        cues = SrtParser.parse(text)
+        binding.tvStatus.text = "${cues.size} خط زیرنویس بارگذاری شد."
+        cache.clear()
+        currentCueIndex = -1
+    }
+}
 
+private fun decodeSubtitleBytes(bytes: ByteArray): String {
+    return when {
+        bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() ->
+            String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+        bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() ->
+            String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+        bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() ->
+            String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+        else -> String(bytes, Charsets.UTF_8)
+    }
+}
     private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { loadVideo(it) }
     }
