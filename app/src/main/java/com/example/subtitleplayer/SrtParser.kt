@@ -14,23 +14,40 @@ object SrtParser {
     }
 
     fun parse(raw: String): List<SubtitleCue> {
-        val text = raw.replace("\r", "")
-        val blocks = text.split(Regex("\n\n+")).filter { it.isNotBlank() }
-        val cues = mutableListOf<SubtitleCue>()
+        // حذف BOM احتمالی و یکسان‌سازی خط‌ها
+        val text = raw.replace("\r", "").removePrefix("\uFEFF")
+        val lines = text.split("\n")
 
-        for (block in blocks) {
-            val lines = block.split("\n").filter { it.isNotBlank() && !it.startsWith("WEBVTT") }
-            val timeLineIndex = lines.indexOfFirst { it.contains("-->") }
+        // بلاک‌ها را با پیمایش خط‌به‌خط جدا می‌کنیم؛ هر خطی که بعد از trim خالی باشد
+        // (چه واقعاً خالی، چه فقط شامل space/tab) به‌عنوان جداکننده‌ی بلاک در نظر گرفته می‌شود.
+        val blocks = mutableListOf<MutableList<String>>()
+        var current = mutableListOf<String>()
+        for (line in lines) {
+            if (line.trim().isEmpty()) {
+                if (current.isNotEmpty()) {
+                    blocks.add(current)
+                    current = mutableListOf()
+                }
+            } else {
+                current.add(line)
+            }
+        }
+        if (current.isNotEmpty()) blocks.add(current)
+
+        val cues = mutableListOf<SubtitleCue>()
+        for (blockLines in blocks) {
+            val filtered = blockLines.filter { !it.startsWith("WEBVTT") }
+            val timeLineIndex = filtered.indexOfFirst { it.contains("-->") }
             if (timeLineIndex == -1) continue
 
-            val timeLine = lines[timeLineIndex]
-            val parts = timeLine.split("-->")
+            val parts = filtered[timeLineIndex].split("-->")
             if (parts.size < 2) continue
 
             val start = timeToMs(parts[0].trim())
             val end = timeToMs(parts[1].trim())
+            if (end <= start) continue // بازه‌ی زمانی نامعتبر را رد می‌کنیم
 
-            val textLines = lines.drop(timeLineIndex + 1)
+            val textLines = filtered.drop(timeLineIndex + 1)
                 .joinToString(" ")
                 .replace(Regex("<[^>]+>"), "")
                 .trim()
