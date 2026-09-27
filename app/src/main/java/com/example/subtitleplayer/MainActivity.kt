@@ -13,7 +13,10 @@ import android.widget.FrameLayout
 import android.widget.SeekBar
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.text.CueGroup
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.subtitleplayer.databinding.ActivityMainBinding
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -31,6 +34,9 @@ class MainActivity : AppCompatActivity() {
     private var cues: List<SubtitleCue> = emptyList()
     private var currentCueIndex = -1
     private val cache = HashMap<String, String>()
+
+    // متن فعلی زیرنویس داخلی ویدیو (وقتی فایل srt خارجی بارگذاری نشده)
+    private var lastEmbeddedText: String = ""
 
     private var translator: Translator? = null
     private var currentTargetTag = TranslateLanguage.PERSIAN
@@ -98,6 +104,25 @@ class MainActivity : AppCompatActivity() {
 
         player = ExoPlayer.Builder(this).build()
         binding.playerView.player = player
+
+        // زیرنویس داخلی (embedded) پلیر خودش به‌صورت پیش‌فرض غیرفعاله؛ فعالش می‌کنیم
+        player?.trackSelectionParameters = player!!.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .build()
+
+        // SubtitleView داخلی PlayerView رو مخفی می‌کنیم تا با tvOriginal/tvTranslated
+        // خودمون تداخل (نمایش دوتایی) نداشته باشه
+        binding.playerView.subtitleView?.visibility = View.GONE
+
+        player?.addListener(object : Player.Listener {
+            override fun onCues(cueGroup: CueGroup) {
+                // فقط وقتی فایل srt خارجی بارگذاری نشده، از زیرنویس داخلی استفاده می‌کنیم
+                if (cues.isNotEmpty()) return
+                val text = cueGroup.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+                handleEmbeddedCue(text)
+            }
+        })
 
         setupTouchHandling()
         setupControls()
@@ -255,6 +280,29 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // وقتی زیرنویس از خود ویدیو (embedded track) میاد، نه از فایل srt خارجی
+    private fun handleEmbeddedCue(text: String) {
+        if (text == lastEmbeddedText) return
+        lastEmbeddedText = text
+
+        binding.tvOriginal.text = text
+        if (text.isEmpty()) {
+            binding.tvTranslated.text = ""
+            return
+        }
+
+        val targetTag = languages[binding.spinnerLang.selectedItemPosition].second
+        val cacheKey = "embedded|$text|$targetTag"
+        val cached = cache[cacheKey]
+        binding.tvTranslated.text = cached ?: ""
+        if (autoTranslateEnabled && cached == null) {
+            translateText(cacheKey, text, targetTag) { translated ->
+                // فقط اگه هنوز همون متن رو صفحه‌ست، آپدیت کن
+                if (lastEmbeddedText == text) binding.tvTranslated.text = translated
+            }
+        }
+    }
+
     private fun updateCurrentCue() {
         val pos = player?.currentPosition ?: return
         val idx = cues.indexOfFirst { pos in it.startMs..it.endMs }
@@ -288,7 +336,13 @@ class MainActivity : AppCompatActivity() {
     private fun translateCue(index: Int, targetTag: String) {
         val key = "$index|$targetTag"
         val original = cues.getOrNull(index)?.text ?: return
+        translateText(key, original, targetTag) { translated ->
+            if (index == currentCueIndex) binding.tvTranslated.text = translated
+        }
+    }
 
+    // تابع مشترک ترجمه: هم برای زیرنویس خارجی (srt) و هم داخلی (embedded) استفاده میشه
+    private fun translateText(cacheKey: String, original: String, targetTag: String, onResult: (String) -> Unit) {
         ensureTranslator(targetTag) { tr, ok ->
             if (!ok || tr == null) {
                 binding.tvStatus.text = "دانلود مدل ترجمه ناموفق بود."
@@ -296,8 +350,8 @@ class MainActivity : AppCompatActivity() {
             }
             tr.translate(original)
                 .addOnSuccessListener { translated ->
-                    cache[key] = translated
-                    if (index == currentCueIndex) binding.tvTranslated.text = translated
+                    cache[cacheKey] = translated
+                    onResult(translated)
                 }
                 .addOnFailureListener {
                     binding.tvStatus.text = "خطا در ترجمه: ${it.localizedMessage}"
