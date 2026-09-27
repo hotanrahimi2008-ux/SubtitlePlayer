@@ -1,325 +1,274 @@
-package com.example.subtitleplayer
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootFrame"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
 
-import android.media.AudioManager
-import android.net.Uri
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.GestureDetector
-import android.view.MotionEvent
-import android.view.View
-import android.widget.ArrayAdapter
-import android.widget.FrameLayout
-import android.widget.SeekBar
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
-import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
-import com.example.subtitleplayer.databinding.ActivityMainBinding
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
-import com.google.mlkit.nl.translate.TranslatorOptions
-import kotlin.math.roundToInt
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:use_controller="false" />
 
-class MainActivity : AppCompatActivity() {
+    <View
+        android:id="@+id/touchOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-    private lateinit var binding: ActivityMainBinding
-    private var player: ExoPlayer? = null
-    private lateinit var audioManager: AudioManager
+    <LinearLayout
+        android:id="@+id/subtitleContainer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal|bottom"
+        android:layout_marginBottom="120dp"
+        android:orientation="vertical"
+        android:gravity="center">
 
-    private var cues: List<SubtitleCue> = emptyList()
-    private var currentCueIndex = -1
-    private val cache = HashMap<String, String>()
+        <TextView
+            android:id="@+id/tvOriginal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:shadowColor="#000000"
+            android:shadowRadius="4"
+            android:gravity="center"
+            android:paddingHorizontal="8dp" />
 
-    private var translator: Translator? = null
-    private var currentTargetTag = TranslateLanguage.PERSIAN
-    private var autoTranslateEnabled = false
+        <TextView
+            android:id="@+id/tvTranslated"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#5B5BF0"
+            android:textSize="16sp"
+            android:shadowColor="#000000"
+            android:shadowRadius="4"
+            android:gravity="center"
+            android:paddingHorizontal="8dp" />
+    </LinearLayout>
 
-    private val languages = listOf(
-        "فارسی" to TranslateLanguage.PERSIAN,
-        "انگلیسی" to TranslateLanguage.ENGLISH,
-        "عربی" to TranslateLanguage.ARABIC,
-        "فرانسوی" to TranslateLanguage.FRENCH
-    )
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="#99000000"
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:gravity="center_vertical"
+        android:visibility="gone">
 
-    private var controlsVisible = false
-    private var currentBrightness = 0.5f
-    private var subtitleDragStartY = 0f
-    private var subtitleDragStartMargin = 0
+        <Button
+            android:id="@+id/btnPickVideo"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="ویدیو" />
 
-    private val handler = Handler(Looper.getMainLooper())
-    private val hideIndicatorsRunnable = Runnable {
-        binding.brightnessIndicator.visibility = View.GONE
-        binding.volumeIndicator.visibility = View.GONE
-    }
+        <Button
+            android:id="@+id/btnPickSubtitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:text="زیرنویس" />
 
-    private val tickRunnable = object : Runnable {
-        override fun run() {
-            updateCurrentCue()
-            updateSeekBar()
-            handler.postDelayed(this, 200)
-        }
-    }
+        <ImageButton
+            android:id="@+id/btnSettings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_preferences"
+            android:contentDescription="تنظیمات" />
+    </LinearLayout>
 
-    private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let { loadVideo(it) }
-    }
-    private val pickSubtitleLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let { loadSubtitle(it) }
-    }
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#99000000"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone">
 
-    private val gestureDetector by lazy {
-        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onSingleTapUp(e: MotionEvent): Boolean {
-                toggleControls()
-                return true
-            }
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-                val width = binding.rootFrame.width
-                val height = binding.rootFrame.height
-                if (width == 0 || height == 0) return true
-                val touchX = e1?.x ?: e2.x
-                val delta = distanceY / height
-                if (touchX < width / 2f) adjustBrightness(delta) else adjustVolume(delta)
-                return true
-            }
-        })
-    }
+            <ImageButton
+                android:id="@+id/btnPlayPause"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@android:color/transparent"
+                android:src="@android:drawable/ic_media_play"
+                android:contentDescription="پخش" />
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+            <TextView
+                android:id="@+id/tvCurrentTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:layout_marginStart="8dp"
+                android:text="00:00" />
 
-        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        currentBrightness = window.attributes.screenBrightness.let { if (it in 0f..1f) it else 0.5f }
+            <SeekBar
+                android:id="@+id/seekBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="8dp"
+                android:max="1000" />
 
-        player = ExoPlayer.Builder(this).build()
-        binding.playerView.player = player
+            <TextView
+                android:id="@+id/tvDuration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:text="00:00" />
+        </LinearLayout>
 
-        setupTouchHandling()
-        setupControls()
-        setupSettingsPanel()
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="6dp">
 
-        handler.post(tickRunnable)
-    }
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:text="ترجمه خودکار زیرنویس" />
 
-    private fun setupTouchHandling() {
-        binding.touchOverlay.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
-            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                handler.postDelayed(hideIndicatorsRunnable, 600)
-            }
-            true
-        }
+            <Switch
+                android:id="@+id/switchAutoTranslate"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
 
-        binding.subtitleContainer.setOnTouchListener { view, event ->
-            val params = view.layoutParams as FrameLayout.LayoutParams
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    subtitleDragStartY = event.rawY
-                    subtitleDragStartMargin = params.bottomMargin
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dy = (subtitleDragStartY - event.rawY).roundToInt()
-                    params.bottomMargin = (subtitleDragStartMargin + dy).coerceIn(20, binding.rootFrame.height - 100)
-                    view.layoutParams = params
-                }
-            }
-            true
-        }
-    }
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="11sp"
+            android:textColor="#CCCCCC"
+            android:layout_marginTop="4dp" />
+    </LinearLayout>
 
-    private fun adjustBrightness(delta: Float) {
-        currentBrightness = (currentBrightness + delta * 2f).coerceIn(0.02f, 1f)
-        val attrs = window.attributes
-        attrs.screenBrightness = currentBrightness
-        window.attributes = attrs
-        binding.brightnessIndicator.visibility = View.VISIBLE
-        binding.volumeIndicator.visibility = View.GONE
-        binding.tvBrightnessValue.text = "☀ ${(currentBrightness * 100).roundToInt()}%"
-        handler.removeCallbacks(hideIndicatorsRunnable)
-    }
+    <LinearLayout
+        android:id="@+id/settingsPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#CC000000"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
 
-    private fun adjustVolume(delta: Float) {
-        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val newVol = (curVol + delta * 2f * maxVol).roundToInt().coerceIn(0, maxVol)
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
-        binding.volumeIndicator.visibility = View.VISIBLE
-        binding.brightnessIndicator.visibility = View.GONE
-        binding.tvVolumeValue.text = "🔊 ${(newVol * 100 / maxVol)}%"
-        handler.removeCallbacks(hideIndicatorsRunnable)
-    }
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="تنظیمات زیرنویس"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:layout_marginBottom="8dp" />
 
-    private fun toggleControls() {
-        controlsVisible = !controlsVisible
-        val vis = if (controlsVisible) View.VISIBLE else View.GONE
-        binding.topBar.visibility = vis
-        binding.bottomBar.visibility = vis
-        if (!controlsVisible) binding.settingsPanel.visibility = View.GONE
-    }
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="اندازه متن"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp" />
+        <SeekBar
+            android:id="@+id/seekTextSize"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="30"
+            android:progress="8" />
 
-    private fun setupControls() {
-        binding.btnPickVideo.setOnClickListener { pickVideoLauncher.launch("video/*") }
-        binding.btnPickSubtitle.setOnClickListener { pickSubtitleLauncher.launch("*/*") }
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="زبان ترجمه"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp"
+            android:layout_marginTop="8dp" />
+        <Spinner
+            android:id="@+id/spinnerLang"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
 
-        binding.btnSettings.setOnClickListener {
-            binding.settingsPanel.visibility =
-                if (binding.settingsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        }
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="رنگ متن"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp"
+            android:layout_marginTop="8dp" />
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
 
-        binding.btnPlayPause.setOnClickListener {
-            player?.let {
-                it.playWhenReady = !it.playWhenReady
-                binding.btnPlayPause.setImageResource(
-                    if (it.playWhenReady) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-                )
-            }
-        }
+            <Button android:id="@+id/colorWhite" android:layout_width="36dp" android:layout_height="36dp" android:backgroundTint="#FFFFFF" android:text="" />
+            <Button android:id="@+id/colorYellow" android:layout_width="36dp" android:layout_height="36dp" android:layout_marginStart="8dp" android:backgroundTint="#FFEB3B" android:text="" />
+            <Button android:id="@+id/colorCyan" android:layout_width="36dp" android:layout_height="36dp" android:layout_marginStart="8dp" android:backgroundTint="#00E5FF" android:text="" />
+            <Button android:id="@+id/colorGreen" android:layout_width="36dp" android:layout_height="36dp" android:layout_marginStart="8dp" android:backgroundTint="#69F0AE" android:text="" />
+        </LinearLayout>
 
-        binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) {
-                    val duration = player?.duration ?: 0L
-                    if (duration > 0) player?.seekTo(duration * progress / 1000)
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="نکته: زیرنویس رو مستقیم روی صفحه بکش تا جاش عوض بشه"
+            android:textColor="#888888"
+            android:textSize="11sp"
+            android:layout_marginTop="10dp" />
+    </LinearLayout>
 
-        binding.switchAutoTranslate.setOnCheckedChangeListener { _, checked ->
-            autoTranslateEnabled = checked
-        }
-    }
+    <LinearLayout
+        android:id="@+id/brightnessIndicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#99000000"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:gravity="center"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/tvBrightnessValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:text="☀ 50%" />
+    </LinearLayout>
 
-    private fun setupSettingsPanel() {
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, languages.map { it.first })
-        binding.spinnerLang.adapter = adapter
-        binding.spinnerLang.setSelection(0)
+    <LinearLayout
+        android:id="@+id/volumeIndicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#99000000"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:gravity="center"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/tvVolumeValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:text="🔊 50%" />
+    </LinearLayout>
 
-        binding.seekTextSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val size = (12 + progress).toFloat()
-                binding.tvOriginal.textSize = size
-                binding.tvTranslated.textSize = size - 2
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        val colorMap = mapOf(
-            binding.colorWhite.id to "#FFFFFF",
-            binding.colorYellow.id to "#FFEB3B",
-            binding.colorCyan.id to "#00E5FF",
-            binding.colorGreen.id to "#69F0AE"
-        )
-        listOf(binding.colorWhite, binding.colorYellow, binding.colorCyan, binding.colorGreen).forEach { btn ->
-            btn.setOnClickListener {
-                binding.tvOriginal.setTextColor(android.graphics.Color.parseColor(colorMap[btn.id]))
-            }
-        }
-    }
-
-    private fun loadVideo(uri: Uri) {
-        player?.setMediaItem(MediaItem.fromUri(uri))
-        player?.prepare()
-        player?.playWhenReady = true
-        binding.btnPlayPause.setImageResource(android.R.drawable.ic_media_pause)
-    }
-
-    private fun loadSubtitle(uri: Uri) {
-        contentResolver.openInputStream(uri)?.use { input ->
-            val text = input.bufferedReader().readText()
-            cues = SrtParser.parse(text)
-            binding.tvStatus.text = "${cues.size} خط زیرنویس بارگذاری شد."
-            cache.clear()
-            currentCueIndex = -1
-        }
-    }
-
-    private fun updateCurrentCue() {
-        val pos = player?.currentPosition ?: return
-        val idx = cues.indexOfFirst { pos in it.startMs..it.endMs }
-        if (idx == currentCueIndex) return
-        currentCueIndex = idx
-
-        if (idx == -1) {
-            binding.tvOriginal.text = ""
-            binding.tvTranslated.text = ""
-        } else {
-            binding.tvOriginal.text = cues[idx].text
-            val targetTag = languages[binding.spinnerLang.selectedItemPosition].second
-            val cached = cache["$idx|$targetTag"]
-            binding.tvTranslated.text = cached ?: ""
-            if (autoTranslateEnabled && cached == null) {
-                translateCue(idx, targetTag)
-            }
-        }
-    }
-
-    private fun updateSeekBar() {
-        val duration = player?.duration ?: 0L
-        val position = player?.currentPosition ?: 0L
-        if (duration > 0) {
-            binding.seekBar.progress = ((position * 1000) / duration).toInt()
-            binding.tvCurrentTime.text = formatTime(position)
-            binding.tvDuration.text = formatTime(duration)
-        }
-    }
-
-    private fun translateCue(index: Int, targetTag: String) {
-        val key = "$index|$targetTag"
-        val original = cues.getOrNull(index)?.text ?: return
-
-        ensureTranslator(targetTag) { tr, ok ->
-            if (!ok || tr == null) {
-                binding.tvStatus.text = "دانلود مدل ترجمه ناموفق بود."
-                return@ensureTranslator
-            }
-            tr.translate(original)
-                .addOnSuccessListener { translated ->
-                    cache[key] = translated
-                    if (index == currentCueIndex) binding.tvTranslated.text = translated
-                }
-                .addOnFailureListener {
-                    binding.tvStatus.text = "خطا در ترجمه: ${it.localizedMessage}"
-                }
-        }
-    }
-
-    private fun ensureTranslator(targetTag: String, callback: (Translator?, Boolean) -> Unit) {
-        if (translator != null && currentTargetTag == targetTag) {
-            callback(translator, true)
-            return
-        }
-        translator?.close()
-        val options = TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.ENGLISH)
-            .setTargetLanguage(targetTag)
-            .build()
-        val newTranslator = Translation.getClient(options)
-        newTranslator.downloadModelIfNeeded()
-            .addOnSuccessListener {
-                translator = newTranslator
-                currentTargetTag = targetTag
-                callback(newTranslator, true)
-            }
-            .addOnFailureListener { callback(null, false) }
-    }
-
-    private fun formatTime(ms: Long): String {
-        val totalSec = ms / 1000
-        return String.format("%02d:%02d", totalSec / 60, totalSec % 60)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        handler.removeCallbacksAndMessages(null)
-        player?.release()
-        translator?.close()
-    }
-}
+</FrameLayout>
