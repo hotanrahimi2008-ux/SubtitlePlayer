@@ -1,274 +1,528 @@
-<?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/rootFrame"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="#000000">
+package com.example.subtitleplayer
 
-    <androidx.media3.ui.PlayerView
-        android:id="@+id/playerView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:use_controller="false" />
+import android.media.AudioManager
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.FrameLayout
+import android.widget.SeekBar
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.text.CueGroup
+import androidx.media3.exoplayer.ExoPlayer
+import com.example.subtitleplayer.databinding.ActivityMainBinding
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
-    <View
-        android:id="@+id/touchOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+class MainActivity : AppCompatActivity() {
 
-    <LinearLayout
-        android:id="@+id/subtitleContainer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal|bottom"
-        android:layout_marginBottom="120dp"
-        android:orientation="vertical"
-        android:gravity="center">
+    private lateinit var binding: ActivityMainBinding
+    private var player: ExoPlayer? = null
+    private lateinit var audioManager: AudioManager
 
-        <TextView
-            android:id="@+id/tvOriginal"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
-            android:textSize="18sp"
-            android:shadowColor="#000000"
-            android:shadowRadius="4"
-            android:gravity="center"
-            android:paddingHorizontal="8dp" />
+    private var cues: List<SubtitleCue> = emptyList()
+    private var currentCueIndex = -1
+    private val cache = HashMap<String, String>()
 
-        <TextView
-            android:id="@+id/tvTranslated"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#5B5BF0"
-            android:textSize="16sp"
-            android:shadowColor="#000000"
-            android:shadowRadius="4"
-            android:gravity="center"
-            android:paddingHorizontal="8dp" />
-    </LinearLayout>
+    // متن فعلی زیرنویس داخلی ویدیو (وقتی فایل srt خارجی بارگذاری نشده)
+    private var lastEmbeddedText: String = ""
 
-    <LinearLayout
-        android:id="@+id/topBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top"
-        android:background="#99000000"
-        android:orientation="horizontal"
-        android:padding="12dp"
-        android:gravity="center_vertical"
-        android:visibility="gone">
+    private var translator: Translator? = null
+    private var currentTargetTag = TranslateLanguage.PERSIAN
+    private var autoTranslateEnabled = false
 
-        <Button
-            android:id="@+id/btnPickVideo"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="ویدیو" />
+    // موتور ترجمه: ML Kit (آفلاین) یا Gemini (آنلاین، با کلید API خود کاربر)
+    private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
+    private var useGemini = false
+    private var geminiKey = ""
+    private val geminiModel = "gemini-2.5-flash-lite" // اگه مدل عوض شد، فقط همین خط رو تغییر بده
+    private val netExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
-        <Button
-            android:id="@+id/btnPickSubtitle"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:text="زیرنویس" />
+    private val languages = listOf(
+        "فارسی" to TranslateLanguage.PERSIAN,
+        "انگلیسی" to TranslateLanguage.ENGLISH,
+        "عربی" to TranslateLanguage.ARABIC,
+        "فرانسوی" to TranslateLanguage.FRENCH
+    )
 
-        <ImageButton
-            android:id="@+id/btnSettings"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:background="@android:color/transparent"
-            android:src="@android:drawable/ic_menu_preferences"
-            android:contentDescription="تنظیمات" />
-    </LinearLayout>
+    private var controlsVisible = false
+    private var currentBrightness = 0.5f
+    private var subtitleDragStartY = 0f
+    private var subtitleDragStartMargin = 0
 
-    <LinearLayout
-        android:id="@+id/bottomBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#99000000"
-        android:orientation="vertical"
-        android:padding="12dp"
-        android:visibility="gone">
+    private val handler = Handler(Looper.getMainLooper())
+    private val hideIndicatorsRunnable = Runnable {
+        binding.brightnessIndicator.visibility = View.GONE
+        binding.volumeIndicator.visibility = View.GONE
+    }
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
+    private val tickRunnable = object : Runnable {
+        override fun run() {
+            updateCurrentCue()
+            updateSeekBar()
+            handler.postDelayed(this, 200)
+        }
+    }
 
-            <ImageButton
-                android:id="@+id/btnPlayPause"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="@android:color/transparent"
-                android:src="@android:drawable/ic_media_play"
-                android:contentDescription="پخش" />
+    private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { loadVideo(it) }
+    }
+    private val pickSubtitleLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { loadSubtitle(it) }
+    }
 
-            <TextView
-                android:id="@+id/tvCurrentTime"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="#FFFFFF"
-                android:layout_marginStart="8dp"
-                android:text="00:00" />
+    private val gestureDetector by lazy {
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                toggleControls()
+                return true
+            }
 
-            <SeekBar
-                android:id="@+id/seekBar"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginHorizontal="8dp"
-                android:max="1000" />
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+                val width = binding.rootFrame.width
+                val height = binding.rootFrame.height
+                if (width == 0 || height == 0) return true
+                val touchX = e1?.x ?: e2.x
+                val delta = distanceY / height
+                if (touchX < width / 2f) adjustBrightness(delta) else adjustVolume(delta)
+                return true
+            }
+        })
+    }
 
-            <TextView
-                android:id="@+id/tvDuration"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="#FFFFFF"
-                android:text="00:00" />
-        </LinearLayout>
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="6dp">
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        currentBrightness = window.attributes.screenBrightness.let { if (it in 0f..1f) it else 0.5f }
 
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:text="ترجمه خودکار زیرنویس" />
+        player = ExoPlayer.Builder(this).build()
+        binding.playerView.player = player
 
-            <Switch
-                android:id="@+id/switchAutoTranslate"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-        </LinearLayout>
+        // زیرنویس داخلی (embedded) پلیر خودش به‌صورت پیش‌فرض غیرفعاله؛ فعالش می‌کنیم
+        player?.trackSelectionParameters = player!!.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .build()
 
-        <TextView
-            android:id="@+id/tvStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="11sp"
-            android:textColor="#CCCCCC"
-            android:layout_marginTop="4dp" />
-    </LinearLayout>
+        // SubtitleView داخلی PlayerView رو مخفی می‌کنیم تا با tvOriginal/tvTranslated
+        // خودمون تداخل (نمایش دوتایی) نداشته باشه
+        binding.playerView.subtitleView?.visibility = View.GONE
 
-    <LinearLayout
-        android:id="@+id/settingsPanel"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#CC000000"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:visibility="gone">
+        player?.addListener(object : Player.Listener {
+            override fun onCues(cueGroup: CueGroup) {
+                // فقط وقتی فایل srt خارجی بارگذاری نشده، از زیرنویس داخلی استفاده می‌کنیم
+                if (cues.isNotEmpty()) return
+                val text = cueGroup.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+                handleEmbeddedCue(text)
+            }
+        })
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="تنظیمات زیرنویس"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:layout_marginBottom="8dp" />
+        setupTouchHandling()
+        setupControls()
+        setupSettingsPanel()
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="اندازه متن"
-            android:textColor="#CCCCCC"
-            android:textSize="12sp" />
-        <SeekBar
-            android:id="@+id/seekTextSize"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:max="30"
-            android:progress="8" />
+        handler.post(tickRunnable)
+    }
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="زبان ترجمه"
-            android:textColor="#CCCCCC"
-            android:textSize="12sp"
-            android:layout_marginTop="8dp" />
-        <Spinner
-            android:id="@+id/spinnerLang"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+    private fun setupTouchHandling() {
+        binding.touchOverlay.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                handler.postDelayed(hideIndicatorsRunnable, 600)
+            }
+            true
+        }
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="رنگ متن"
-            android:textColor="#CCCCCC"
-            android:textSize="12sp"
-            android:layout_marginTop="8dp" />
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
+        binding.subtitleContainer.setOnTouchListener { view, event ->
+            val params = view.layoutParams as FrameLayout.LayoutParams
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    subtitleDragStartY = event.rawY
+                    subtitleDragStartMargin = params.bottomMargin
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = (subtitleDragStartY - event.rawY).roundToInt()
+                    params.bottomMargin = (subtitleDragStartMargin + dy).coerceIn(20, binding.rootFrame.height - 100)
+                    view.layoutParams = params
+                }
+            }
+            true
+        }
+    }
 
-            <Button android:id="@+id/colorWhite" android:layout_width="36dp" android:layout_height="36dp" android:backgroundTint="#FFFFFF" android:text="" />
-            <Button android:id="@+id/colorYellow" android:layout_width="36dp" android:layout_height="36dp" android:layout_marginStart="8dp" android:backgroundTint="#FFEB3B" android:text="" />
-            <Button android:id="@+id/colorCyan" android:layout_width="36dp" android:layout_height="36dp" android:layout_marginStart="8dp" android:backgroundTint="#00E5FF" android:text="" />
-            <Button android:id="@+id/colorGreen" android:layout_width="36dp" android:layout_height="36dp" android:layout_marginStart="8dp" android:backgroundTint="#69F0AE" android:text="" />
-        </LinearLayout>
+    private fun adjustBrightness(delta: Float) {
+        currentBrightness = (currentBrightness + delta * 2f).coerceIn(0.02f, 1f)
+        val attrs = window.attributes
+        attrs.screenBrightness = currentBrightness
+        window.attributes = attrs
+        binding.brightnessIndicator.visibility = View.VISIBLE
+        binding.volumeIndicator.visibility = View.GONE
+        binding.tvBrightnessValue.text = "☀ ${(currentBrightness * 100).roundToInt()}%"
+        handler.removeCallbacks(hideIndicatorsRunnable)
+    }
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="نکته: زیرنویس رو مستقیم روی صفحه بکش تا جاش عوض بشه"
-            android:textColor="#888888"
-            android:textSize="11sp"
-            android:layout_marginTop="10dp" />
-    </LinearLayout>
+    private fun adjustVolume(delta: Float) {
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val newVol = (curVol + delta * 2f * maxVol).roundToInt().coerceIn(0, maxVol)
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
+        binding.volumeIndicator.visibility = View.VISIBLE
+        binding.brightnessIndicator.visibility = View.GONE
+        binding.tvVolumeValue.text = "🔊 ${(newVol * 100 / maxVol)}%"
+        handler.removeCallbacks(hideIndicatorsRunnable)
+    }
 
-    <LinearLayout
-        android:id="@+id/brightnessIndicator"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:background="#99000000"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:gravity="center"
-        android:visibility="gone">
-        <TextView
-            android:id="@+id/tvBrightnessValue"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp"
-            android:text="☀ 50%" />
-    </LinearLayout>
+    private fun toggleControls() {
+        controlsVisible = !controlsVisible
+        val vis = if (controlsVisible) View.VISIBLE else View.GONE
+        binding.topBar.visibility = vis
+        binding.bottomBar.visibility = vis
+        if (!controlsVisible) binding.settingsPanel.visibility = View.GONE
+    }
 
-    <LinearLayout
-        android:id="@+id/volumeIndicator"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:background="#99000000"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:gravity="center"
-        android:visibility="gone">
-        <TextView
-            android:id="@+id/tvVolumeValue"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp"
-            android:text="🔊 50%" />
-    </LinearLayout>
+    private fun setupControls() {
+        binding.btnPickVideo.setOnClickListener { pickVideoLauncher.launch("video/*") }
+        binding.btnPickSubtitle.setOnClickListener { pickSubtitleLauncher.launch("*/*") }
 
-</FrameLayout>
+        binding.btnSettings.setOnClickListener {
+            binding.settingsPanel.visibility =
+                if (binding.settingsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+
+        binding.btnPlayPause.setOnClickListener {
+            player?.let {
+                it.playWhenReady = !it.playWhenReady
+                binding.btnPlayPause.setImageResource(
+                    if (it.playWhenReady) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+                )
+            }
+        }
+
+        binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val duration = player?.duration ?: 0L
+                    if (duration > 0) player?.seekTo(duration * progress / 1000)
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        binding.switchAutoTranslate.setOnCheckedChangeListener { _, checked ->
+            autoTranslateEnabled = checked
+        }
+    }
+
+    private fun setupSettingsPanel() {
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, languages.map { it.first })
+        binding.spinnerLang.adapter = adapter
+        binding.spinnerLang.setSelection(0)
+
+        // --- انتخاب موتور ترجمه و کلید API (ذخیره در حافظه‌ی خصوصی برنامه) ---
+        useGemini = prefs.getBoolean("use_gemini", false)
+        geminiKey = prefs.getString("gemini_key", "") ?: ""
+        val engines = listOf("ML Kit (آفلاین)", "Gemini (آنلاین)")
+        binding.spinnerEngine.adapter =
+            ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, engines)
+        binding.spinnerEngine.setSelection(if (useGemini) 1 else 0)
+        binding.etApiKey.setText(geminiKey)
+
+        binding.spinnerEngine.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val newValue = position == 1
+                if (newValue == useGemini) return
+                useGemini = newValue
+                prefs.edit().putBoolean("use_gemini", useGemini).apply()
+                resetTranslationState()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.etApiKey.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                geminiKey = s?.toString()?.trim() ?: ""
+                prefs.edit().putString("gemini_key", geminiKey).apply()
+            }
+        })
+
+        binding.seekTextSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val size = (12 + progress).toFloat()
+                binding.tvOriginal.textSize = size
+                binding.tvTranslated.textSize = size - 2
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        val colorMap = mapOf(
+            binding.colorWhite.id to "#FFFFFF",
+            binding.colorYellow.id to "#FFEB3B",
+            binding.colorCyan.id to "#00E5FF",
+            binding.colorGreen.id to "#69F0AE"
+        )
+        listOf(binding.colorWhite, binding.colorYellow, binding.colorCyan, binding.colorGreen).forEach { btn ->
+            btn.setOnClickListener {
+                binding.tvOriginal.setTextColor(android.graphics.Color.parseColor(colorMap[btn.id]))
+            }
+        }
+    }
+
+    private fun loadVideo(uri: Uri) {
+        // با تعویض ویدیو، زیرنویس خارجی قبلی و متن embedded قبلی دیگه معتبر نیستن
+        cues = emptyList()
+        currentCueIndex = -1
+        lastEmbeddedText = ""
+        binding.tvOriginal.text = ""
+        binding.tvTranslated.text = ""
+
+        player?.setMediaItem(MediaItem.fromUri(uri))
+        player?.prepare()
+        player?.playWhenReady = true
+        binding.btnPlayPause.setImageResource(android.R.drawable.ic_media_pause)
+    }
+
+    // تنها نسخه‌ی loadSubtitle: تشخیص encoding قبل از پارس کردن
+    private fun loadSubtitle(uri: Uri) {
+        contentResolver.openInputStream(uri)?.use { input ->
+            val bytes = input.readBytes()
+            val text = decodeSubtitleBytes(bytes)
+            cues = SrtParser.parse(text)
+            binding.tvStatus.text = "${cues.size} خط زیرنویس بارگذاری شد."
+            cache.clear()
+            currentCueIndex = -1
+            lastEmbeddedText = ""
+        }
+    }
+
+    private fun decodeSubtitleBytes(bytes: ByteArray): String {
+        return when {
+            bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() ->
+                String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() ->
+                String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+            bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() ->
+                String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+            else -> String(bytes, Charsets.UTF_8)
+        }
+    }
+
+    // وقتی زیرنویس از خود ویدیو (embedded track) میاد، نه از فایل srt خارجی
+    private fun handleEmbeddedCue(text: String) {
+        if (text == lastEmbeddedText) return
+        lastEmbeddedText = text
+
+        binding.tvOriginal.text = text
+        if (text.isEmpty()) {
+            binding.tvTranslated.text = ""
+            return
+        }
+
+        val targetTag = languages[binding.spinnerLang.selectedItemPosition].second
+        val cacheKey = "embedded|$text|$targetTag"
+        val cached = cache[cacheKey]
+        binding.tvTranslated.text = cached ?: ""
+        if (autoTranslateEnabled && cached == null) {
+            translateText(cacheKey, text, targetTag) { translated ->
+                // فقط اگه هنوز همون متن رو صفحه‌ست، آپدیت کن
+                if (lastEmbeddedText == text) binding.tvTranslated.text = translated
+            }
+        }
+    }
+
+    private fun updateCurrentCue() {
+        val pos = player?.currentPosition ?: return
+        val idx = cues.indexOfFirst { pos in it.startMs..it.endMs }
+        if (idx == currentCueIndex) return
+        currentCueIndex = idx
+
+        if (idx == -1) {
+            binding.tvOriginal.text = ""
+            binding.tvTranslated.text = ""
+        } else {
+            binding.tvOriginal.text = cues[idx].text
+            val targetTag = languages[binding.spinnerLang.selectedItemPosition].second
+            val cached = cache["$idx|$targetTag"]
+            binding.tvTranslated.text = cached ?: ""
+            if (autoTranslateEnabled && cached == null) {
+                translateCue(idx, targetTag)
+            }
+        }
+    }
+
+    private fun updateSeekBar() {
+        val duration = player?.duration ?: 0L
+        val position = player?.currentPosition ?: 0L
+        if (duration > 0) {
+            binding.seekBar.progress = ((position * 1000) / duration).toInt()
+            binding.tvCurrentTime.text = formatTime(position)
+            binding.tvDuration.text = formatTime(duration)
+        }
+    }
+
+    private fun translateCue(index: Int, targetTag: String) {
+        val key = "$index|$targetTag"
+        val original = cues.getOrNull(index)?.text ?: return
+        translateText(key, original, targetTag) { translated ->
+            if (index == currentCueIndex) binding.tvTranslated.text = translated
+        }
+    }
+
+    // تابع مشترک ترجمه: هم برای زیرنویس خارجی (srt) و هم داخلی (embedded) استفاده میشه
+    private fun translateText(cacheKey: String, original: String, targetTag: String, onResult: (String) -> Unit) {
+        if (useGemini && geminiKey.isNotBlank()) {
+            translateWithGemini(original, targetTag) { result ->
+                result.onSuccess { translated ->
+                    cache[cacheKey] = translated
+                    onResult(translated)
+                }.onFailure { e ->
+                    // اگه Gemini خطا داد (اینترنت، سهمیه، بلاک منطقه‌ای...) با ML Kit ادامه می‌دیم
+                    binding.tvStatus.text = "Gemini: ${e.message} — با ML Kit ترجمه شد"
+                    translateWithMlKit(cacheKey, original, targetTag, onResult)
+                }
+            }
+        } else {
+            if (useGemini) binding.tvStatus.text = "کلید Gemini وارد نشده؛ از ML Kit استفاده شد."
+            translateWithMlKit(cacheKey, original, targetTag, onResult)
+        }
+    }
+
+    private fun resetTranslationState() {
+        cache.clear()
+        currentCueIndex = -1
+        lastEmbeddedText = ""
+    }
+
+    private fun languageNameForPrompt(tag: String): String = when (tag) {
+        TranslateLanguage.PERSIAN -> "Persian (Farsi)"
+        TranslateLanguage.ENGLISH -> "English"
+        TranslateLanguage.ARABIC -> "Arabic"
+        TranslateLanguage.FRENCH -> "French"
+        else -> tag
+    }
+
+    // ترجمه با Gemini از طریق REST (بدون کتابخانه‌ی اضافه). روی ترد پس‌زمینه اجرا میشه.
+    private fun translateWithGemini(text: String, targetTag: String, done: (Result<String>) -> Unit) {
+        val key = geminiKey
+        netExecutor.execute {
+            val result = runCatching {
+                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$geminiModel:generateContent")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 10_000
+                    readTimeout = 20_000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("x-goog-api-key", key)
+                }
+
+                val instruction = "You are a subtitle translator. Detect the source language automatically and " +
+                    "translate the user's subtitle line into ${languageNameForPrompt(targetTag)}. " +
+                    "Use natural, colloquial wording suitable for movie dialogue. " +
+                    "Output ONLY the translation, with no quotes or explanations."
+
+                val body = JSONObject()
+                    .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", instruction))))
+                    .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", text)))))
+                    .put("generationConfig", JSONObject().put("temperature", 0.2))
+
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+                val code = conn.responseCode
+                if (code != 200) {
+                    val hint = when (code) {
+                        400, 401, 403 -> "کلید نامعتبر یا دسترسی مسدود ($code)"
+                        429 -> "سهمیه/سرعت مجاز تمام شد (429)"
+                        else -> "خطای سرور ($code)"
+                    }
+                    conn.disconnect()
+                    error(hint)
+                }
+
+                val response = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+                JSONObject(response)
+                    .getJSONArray("candidates").getJSONObject(0)
+                    .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
+                    .getString("text").trim()
+            }
+            runOnUiThread { if (!isDestroyed) done(result) }
+        }
+    }
+
+    private fun translateWithMlKit(cacheKey: String, original: String, targetTag: String, onResult: (String) -> Unit) {
+        ensureTranslator(targetTag) { tr, ok ->
+            if (!ok || tr == null) {
+                binding.tvStatus.text = "دانلود مدل ترجمه ناموفق بود."
+                return@ensureTranslator
+            }
+            tr.translate(original)
+                .addOnSuccessListener { translated ->
+                    cache[cacheKey] = translated
+                    onResult(translated)
+                }
+                .addOnFailureListener {
+                    binding.tvStatus.text = "خطا در ترجمه: ${it.localizedMessage}"
+                }
+        }
+    }
+
+    private fun ensureTranslator(targetTag: String, callback: (Translator?, Boolean) -> Unit) {
+        if (translator != null && currentTargetTag == targetTag) {
+            callback(translator, true)
+            return
+        }
+        translator?.close()
+        val options = TranslatorOptions.Builder()
+            .setSourceLanguage(TranslateLanguage.ENGLISH)
+            .setTargetLanguage(targetTag)
+            .build()
+        val newTranslator = Translation.getClient(options)
+        newTranslator.downloadModelIfNeeded()
+            .addOnSuccessListener {
+                translator = newTranslator
+                currentTargetTag = targetTag
+                callback(newTranslator, true)
+            }
+            .addOnFailureListener { callback(null, false) }
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSec = ms / 1000
+        return String.format("%02d:%02d", totalSec / 60, totalSec % 60)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
+        netExecutor.shutdownNow()
+        player?.release()
+        translator?.close()
+    }
+}
